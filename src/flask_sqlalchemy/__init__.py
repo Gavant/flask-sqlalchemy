@@ -863,7 +863,7 @@ class SQLAlchemy:
         """
         if sa_url.drivername.startswith("mysql"):
             sa_url.query.setdefault("charset", "utf8")
-            if sa_url.drivername != "mysql+gaerdbms":
+            if sa_url.drivername != "mysql+gaerdbms" and sa_url.drivername != 'mysql+auroradataapi':
                 options.setdefault("pool_size", 10)
                 options.setdefault("pool_recycle", 7200)
         elif sa_url.drivername == "sqlite":
