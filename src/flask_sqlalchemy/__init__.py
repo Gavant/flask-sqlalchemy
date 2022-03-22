@@ -17,19 +17,52 @@ from sqlalchemy import event
 from sqlalchemy import inspect
 from sqlalchemy import orm
 from sqlalchemy.engine.url import make_url
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.ext.declarative import DeclarativeMeta
 from sqlalchemy.orm.exc import UnmappedClassError
 from sqlalchemy.orm.session import Session as SessionBase
 
 from .model import DefaultMeta
 from .model import Model
 
-__version__ = "3.0.0.dev"
+try:
+    from sqlalchemy.orm import declarative_base
+    from sqlalchemy.orm import DeclarativeMeta
+except ImportError:
+    # SQLAlchemy <= 1.3
+    from sqlalchemy.ext.declarative import declarative_base
+    from sqlalchemy.ext.declarative import DeclarativeMeta
+
+# Scope the session to the current greenlet if greenlet is available,
+# otherwise fall back to the current thread.
+try:
+    from greenlet import getcurrent as _ident_func
+except ImportError:
+    from threading import get_ident as _ident_func
+
+__version__ = "3.0.0.dev0"
 
 _signals = Namespace()
 models_committed = _signals.signal("models-committed")
 before_models_committed = _signals.signal("before-models-committed")
+
+
+def _sa_url_set(url, **kwargs):
+    try:
+        url = url.set(**kwargs)
+    except AttributeError:
+        # SQLAlchemy <= 1.3
+        for key, value in kwargs.items():
+            setattr(url, key, value)
+
+    return url
+
+
+def _sa_url_query_setdefault(url, **kwargs):
+    query = dict(url.query)
+
+    for key, value in kwargs.items():
+        query.setdefault(key, value)
+
+    return _sa_url_set(url, query=query)
 
 
 def _make_table(db):
@@ -139,7 +172,7 @@ class SignallingSession(SessionBase):
             **options,
         )
 
-    def get_bind(self, mapper=None, clause=None):
+    def get_bind(self, mapper=None, **kwargs):
         """Return the engine or connection for a given model or
         table, using the ``__bind_key__`` if it is set.
         """
@@ -157,7 +190,8 @@ class SignallingSession(SessionBase):
             if bind_key is not None:
                 state = get_state(self.app)
                 return state.db.get_engine(self.app, bind=bind_key)
-        return SessionBase.get_bind(self, mapper, clause)
+
+        return super().get_bind(mapper, **kwargs)
 
 
 class _SessionSignalEvents:
@@ -566,7 +600,7 @@ class _EngineConnector:
                 return self._engine
 
             sa_url = make_url(uri)
-            options = self.get_options(sa_url, echo)
+            sa_url, options = self.get_options(sa_url, echo)
             self._engine = rv = self._sa.create_engine(sa_url, options)
 
             if _record_queries(self._app):
@@ -580,8 +614,7 @@ class _EngineConnector:
 
     def get_options(self, sa_url, echo):
         options = {}
-
-        self._sa.apply_driver_hacks(self._app, sa_url, options)
+        sa_url, options = self._sa.apply_driver_hacks(self._app, sa_url, options)
 
         if echo:
             options["echo"] = echo
@@ -591,7 +624,7 @@ class _EngineConnector:
         options.update(self._app.config["SQLALCHEMY_ENGINE_OPTIONS"])
         # Give options set in SQLAlchemy.__init__() ultimate priority
         options.update(self._sa._engine_options)
-        return options
+        return sa_url, options
 
 
 def get_state(app):
@@ -757,7 +790,7 @@ class SQLAlchemy:
         if options is None:
             options = {}
 
-        scopefunc = options.pop("scopefunc", _app_ctx_stack.__ident_func__)
+        scopefunc = options.pop("scopefunc", _ident_func)
         options.setdefault("query_cls", self.Query)
         return orm.scoped_session(self.create_session(options), scopefunc=scopefunc)
 
@@ -860,9 +893,18 @@ class SQLAlchemy:
 
         The default implementation provides some defaults for things
         like pool sizes for MySQL and SQLite.
+
+        .. versionchanged:: 3.0
+            Change the default MySQL character set to "utf8mb4".
+
+        .. versionchanged:: 2.5
+            Returns ``(sa_url, options)``. SQLAlchemy 1.4 made the URL
+            immutable, so any changes to it must now be passed back up
+            to the original caller.
         """
         if sa_url.drivername.startswith("mysql"):
-            sa_url.query.setdefault("charset", "utf8")
+            sa_url = _sa_url_query_setdefault(sa_url, charset="utf8mb4")
+
             if sa_url.drivername != "mysql+gaerdbms":
                 pool_class = options.get("poolclass")
                 if pool_class and pool_class.status != 'NullPool':
@@ -900,7 +942,11 @@ class SQLAlchemy:
             # app instance path, which might need to be created.
             if not detected_in_memory and not os.path.isabs(sa_url.database):
                 os.makedirs(app.instance_path, exist_ok=True)
-                sa_url.database = os.path.join(app.instance_path, sa_url.database)
+                sa_url = _sa_url_set(
+                    sa_url, database=os.path.join(app.root_path, sa_url.database)
+                )
+
+        return sa_url, options
 
     @property
     def engine(self):
@@ -932,12 +978,12 @@ class SQLAlchemy:
             return connector.get_engine()
 
     def create_engine(self, sa_url, engine_opts):
-        """
-            Override this method to have final say over how the SQLAlchemy engine
-            is created.
+        """Override this method to have final say over how the
+        SQLAlchemy engine is created.
 
-            In most cases, you will want to use ``'SQLALCHEMY_ENGINE_OPTIONS'``
-            config variable or set ``engine_options`` for :func:`SQLAlchemy`.
+        In most cases, you will want to use
+        ``'SQLALCHEMY_ENGINE_OPTIONS'`` config variable or set
+        ``engine_options`` for :func:`SQLAlchemy`.
         """
         return sqlalchemy.create_engine(sa_url, **engine_opts)
 
@@ -957,7 +1003,7 @@ class SQLAlchemy:
         raise RuntimeError(
             "No application found. Either work inside a view function or push"
             " an application context. See"
-            " http://flask-sqlalchemy.pocoo.org/contexts/."
+            " https://flask-sqlalchemy.palletsprojects.com/contexts/."
         )
 
     def get_tables_for_bind(self, bind=None):
@@ -1001,26 +1047,40 @@ class SQLAlchemy:
             op(bind=self.get_engine(app, bind), **extra)
 
     def create_all(self, bind="__all__", app=None):
-        """Creates all tables.
+        """Create all tables that do not already exist in the database.
+        This does not update existing tables, use a migration library
+        for that.
+
+        :param bind: A bind key or list of keys to create the tables
+            for. Defaults to all binds.
+        :param app: Use this app instead of requiring an app context.
 
         .. versionchanged:: 0.12
-           Parameters were added
+            Added the ``bind`` and ``app`` parameters.
         """
         self._execute_for_all_tables(app, bind, "create_all")
 
     def drop_all(self, bind="__all__", app=None):
-        """Drops all tables.
+        """Drop all tables.
+
+        :param bind: A bind key or list of keys to drop the tables for.
+            Defaults to all binds.
+        :param app: Use this app instead of requiring an app context.
 
         .. versionchanged:: 0.12
-           Parameters were added
+            Added the ``bind`` and ``app`` parameters.
         """
         self._execute_for_all_tables(app, bind, "drop_all")
 
     def reflect(self, bind="__all__", app=None):
         """Reflects tables from the database.
 
+        :param bind: A bind key or list of keys to reflect the tables
+            from. Defaults to all binds.
+        :param app: Use this app instead of requiring an app context.
+
         .. versionchanged:: 0.12
-           Parameters were added
+            Added the ``bind`` and ``app`` parameters.
         """
         self._execute_for_all_tables(app, bind, "reflect", skip_tables=True)
 

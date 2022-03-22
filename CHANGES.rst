@@ -7,6 +7,10 @@ Unreleased
 -   Bump minimum version of Flask to 1.0.4.
 -   Bump minimum version of SQLAlchemy to 1.2.
 -   Remove previously deprecated code.
+-   The CamelCase to snake_case table name converter handles more
+    patterns correctly. If such a name was already created in the
+    database, either use Alembic to rename the table, or set
+    ``__tablename__`` to keep the old name. :issue:`406`
 -   Set ``SQLALCHEMY_TRACK_MODIFICATIONS`` to ``False`` by default.
     :pr:`727`
 -   Remove default ``'sqlite:///:memory:'`` setting for
@@ -18,6 +22,25 @@ Unreleased
 -   Deprecate ``SQLALCHEMY_COMMIT_ON_TEARDOWN`` as it can cause various
     design issues that are difficult to debug. Call
     ``db.session.commit()`` directly instead. :issue:`216`
+-   Change the default MySQL character set to "utf8mb4". :issue:`875`
+
+
+Version 2.5.1
+-------------
+
+Released 2021-03-18
+
+-   Fix compatibility with Python 2.7.
+
+
+Version 2.5.0
+-------------
+
+Released 2021-03-18
+
+-   Update to support SQLAlchemy 1.4.
+-   SQLAlchemy ``URL`` objects are immutable. Some internal methods have
+    changed to return a new URL instead of ``None``. :issue:`885`
 
 
 Version 2.4.4

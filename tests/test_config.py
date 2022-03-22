@@ -1,3 +1,4 @@
+import os
 from unittest import mock
 
 import pytest
@@ -9,9 +10,8 @@ from flask_sqlalchemy import SQLAlchemy
 
 @pytest.fixture
 def app_nr(app):
-    """
-        Signal/event registration with record queries breaks when
-        sqlalchemy.create_engine() is mocked out.
+    """Signal/event registration with record queries breaks when
+    sqlalchemy.create_engine() is mocked out.
     """
     app.config["SQLALCHEMY_RECORD_QUERIES"] = False
     return app
@@ -40,7 +40,7 @@ class TestConfigKeys:
     def test_defaults_with_uri(self, app, recwarn):
         """
         Test default config values when URI is provided, in the order they
-        appear in the documentation: http://flask-sqlalchemy.pocoo.org/dev/config/
+        appear in the documentation: https://flask-sqlalchemy.palletsprojects.com/config
 
         Our pytest fixture for creating the app sets SQLALCHEMY_DATABASE_URI
         """
@@ -65,9 +65,8 @@ class TestConfigKeys:
 
 @mock.patch.object(sqlalchemy, "create_engine", autospec=True, spec_set=True)
 class TestCreateEngine:
-    """
-        Tests for _EngineConnector and SQLAlchemy methods inolved in setting up
-        the SQLAlchemy engine.
+    """Tests for _EngineConnector and SQLAlchemy methods involved in
+    setting up the SQLAlchemy engine.
     """
 
     def test_engine_echo_default(self, m_create_engine, app_nr):
@@ -109,3 +108,9 @@ class TestCreateEngine:
         args, options = m_create_engine.call_args
         assert options["poolclass"].__name__ == "NullPool"
         assert "pool_size" not in options
+
+
+def test_sqlite_relative_to_app_root(app):
+    app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///test.db"
+    db = SQLAlchemy(app)
+    assert db.engine.url.database == os.path.join(app.root_path, "test.db")
